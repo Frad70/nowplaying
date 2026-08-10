@@ -4,3 +4,4 @@ config.json
 .code_hash
 .venv/
 __pycache__/
+*.pyc
