@@ -1,0 +1,14 @@
+{
+  "api_id": 0,
+  "api_hash": "",
+  "phone": "",
+  "player_identity": "YandexMusic",
+  "base_bio": "",
+  "prefix": "♪ ",
+  "bio_limit": 140,
+  "min_interval": 45,
+  "pause_grace": 20,
+  "emoji_status": true,
+  "emoji_document_id": null,
+  "emoji_candidates": ["🎵", "🎧", "🎶", "🎼", "🎤"]
+}

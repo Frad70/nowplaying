@@ -1,0 +1,13 @@
+[Unit]
+Description=Now-playing bridge (MPRIS to Telegram)
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/home/frad70/nowplaying/.venv/bin/python /home/frad70/nowplaying/nowplaying.py
+Restart=on-failure
+RestartSec=10
+WorkingDirectory=/home/frad70/nowplaying
+
+[Install]
+WantedBy=default.target
