@@ -13,6 +13,9 @@ Telegram profile: bio line plus a custom emoji status while music is playing.
   the cooldown instead of blocking the loop.
 - Pause or player exit longer than `pause_grace` seconds restores the base bio
   and clears the emoji status.
+- On SIGINT or SIGTERM, the bridge tries to restore the base bio and clear its
+  emoji status before disconnecting. If Telegram rejects an update, check the
+  profile manually; abrupt termination cannot run cleanup.
 
 ## Setup
 
@@ -21,9 +24,11 @@ Telegram profile: bio line plus a custom emoji status while music is playing.
    my.telegram.org) and `phone`.
 3. Authorize the session: `.venv/bin/python login.py`.
 4. Pick the emoji status: `.venv/bin/python emoji.py` (see below).
-5. `cp nowplaying.service ~/.config/systemd/user/` and
-   `systemctl --user enable --now nowplaying.service`. The unit assumes the
-   checkout lives in `~/nowplaying`.
+5. `.venv/bin/python install-service.py` writes a user service with the current
+   checkout path. Inspect it first with `.venv/bin/python install-service.py --print`.
+6. `systemctl --user daemon-reload && systemctl --user enable --now nowplaying.service`.
+   Rerun step 5 after moving the checkout. `systemctl --user stop nowplaying.service`
+   requests profile restoration before the process exits.
 
 `config.json` and `*.session` are gitignored — the session file is full access
 to the account, never commit or share it.
