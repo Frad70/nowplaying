@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import signal
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -113,6 +114,16 @@ class MprisWatcher:
                           "member='NameOwnerChanged'"])
         await self._rescan()
 
+    async def close(self) -> None:
+        if self._bus is None:
+            return
+        self._bus.remove_message_handler(self._handle)
+        for task in self._tasks:
+            task.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._bus.disconnect()
+        self._bus = None
+
     async def _call(self, dest, path, iface, member, signature, body):
         assert self._bus is not None
         reply = await self._bus.call(Message(destination=dest, path=path, interface=iface,
@@ -214,6 +225,7 @@ class Publisher:
         self._desired: Track | None = None
         self._published: Track | None = None
         self._emoji_on = False
+        self._bio_dirty = False
         self._wake = asyncio.Event()
         self._clear_at: float | None = None
 
@@ -268,9 +280,13 @@ class Publisher:
         """Push bio + emoji. Returns a suggested extra cooldown (seconds) or None."""
         retry: float | None = None
         bio = render_bio(track, self._cfg) if track else self._cfg.get("base_bio", "")
+        if track is not None:
+            self._bio_dirty = True
         try:
             await self._client(UpdateProfileRequest(about=bio))
             self._published = track
+            if track is None:
+                self._bio_dirty = False
             log.info("bio -> %s", bio.replace("\n", " | "))
         except FloodWaitError as exc:
             log.warning("flood wait %ss on bio", exc.seconds)
@@ -283,6 +299,16 @@ class Publisher:
         if emoji_retry is not None:
             retry = emoji_retry if retry is None else max(retry, emoji_retry)
         return retry
+
+    async def restore(self) -> None:
+        """Try to restore the configured profile when the bridge stops."""
+        if not self._bio_dirty and not self._emoji_on:
+            return
+        self._desired = None
+        self._clear_at = None
+        await self._write(None)
+        if self._bio_dirty or self._emoji_on:
+            log.error("profile restoration incomplete; check bio and emoji status")
 
     async def _write_emoji(self, on: bool) -> float | None:
         if not self._cfg.get("emoji_status", True) or on == self._emoji_on:
@@ -310,24 +336,55 @@ async def main() -> int:
         log.info("no emoji_document_id in config; run emoji.py to pick one")
     client = TelegramClient(SESSION, int(cfg["api_id"]), cfg["api_hash"])
     await client.connect()
-    if not await client.is_user_authorized():
-        log.error("session is not authorized; run login.py first")
-        return 1
+    publisher = None
+    watcher = None
+    publisher_task = None
+    stop_task = None
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+    try:
+        if not await client.is_user_authorized():
+            log.error("session is not authorized; run login.py first")
+            return 1
 
-    publisher = Publisher(client, cfg)
+        publisher = Publisher(client, cfg)
 
-    async def on_change(status: str | None, track: Track) -> None:
-        if status == "Playing" and track:
-            publisher.set_playing(track)
-        else:
-            publisher.set_idle()
+        async def on_change(status: str | None, track: Track) -> None:
+            if status == "Playing" and track:
+                publisher.set_playing(track)
+            else:
+                publisher.set_idle()
 
-    identity = cfg.get("player_identity", "YandexMusic")
-    watcher = MprisWatcher(identity, on_change)
-    await watcher.start()
-    log.info("watching %s", identity)
-    await publisher.run()
-    return 0
+        identity = cfg.get("player_identity", "YandexMusic")
+        watcher = MprisWatcher(identity, on_change)
+        await watcher.start()
+        log.info("watching %s", identity)
+        publisher_task = asyncio.create_task(publisher.run())
+        stop_task = asyncio.create_task(stop.wait())
+        done, _ = await asyncio.wait({publisher_task, stop_task},
+                                     return_when=asyncio.FIRST_COMPLETED)
+        if publisher_task in done:
+            await publisher_task
+        return 0
+    finally:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.remove_signal_handler(sig)
+        try:
+            if watcher is not None:
+                await watcher.close()
+        finally:
+            for task in (publisher_task, stop_task):
+                if task is not None:
+                    task.cancel()
+            await asyncio.gather(*(task for task in (publisher_task, stop_task)
+                                   if task is not None), return_exceptions=True)
+            try:
+                if publisher is not None:
+                    await publisher.restore()
+            finally:
+                await client.disconnect()
 
 
 if __name__ == "__main__":
